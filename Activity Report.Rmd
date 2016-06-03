@@ -1,0 +1,119 @@
+---
+title: 'Machine Learning: Activity Tracking'
+author: "MK"
+date: "May 29, 2016"
+output: html_document
+---
+
+## Summary
+
+From Jeff Leek's assignment: "Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset)".
+
+## Preprocessing
+
+The analysis assumes that the files [pml-testing.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv) and [pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv) are downloaded in the working directory. If they are not, the following code can be used to do that:
+
+The first step is to read the data files into R. Given the amount of NAs, it's a good idea to label those from the beginning.
+
+```{r, echo = TRUE}
+testing <- read.csv("pml-testing.csv", header = TRUE, na.strings = c("NA",""))
+training <- read.csv("pml-training.csv", header = TRUE, na.strings = c("NA",""))
+dim(training); dim(testing)
+```
+
+After inspection, there are columns that contain only NAs and variables that are not relevant for the purposes of this analysis. In addition, the very last column in the testing set contains the variable "problem id", which is another variable that can be removed. 
+
+```{r, echo = TRUE}
+trainingNAfilter <- training[,(colSums(is.na(training)) == 0)]
+testingNAfilter <- testing[,(colSums(is.na(testing)) == 0)]
+trainingTidy <- trainingNAfilter[,-(1:6)]
+testingTidy <- testingNAfilter[, -(1:6)]
+testingTidy <- testingTidy[,-54]
+dim(trainingTidy); dim(testingTidy)
+```
+
+Finally, there are variables that are highly correlated with one another that can be removed in order to reduce the variance.
+
+```{r, echo = TRUE}
+library(caret)
+library(corrplot)
+corMatrix <- abs(cor(trainingTidy[, -54]))
+diag(corMatrix) <- 0
+corrplot(corMatrix, tl.cex = 0.6)
+highCorrs <- findCorrelation(corMatrix, cutoff = .9)
+train <- trainingTidy[, -c(highCorrs)]
+test <- testingTidy[, -c(highCorrs)]
+dim(train); dim(test)
+```
+
+After tidying up, "train" and "test" can be used with no empty, irrelevant, or redundant columns.
+
+## Building the Model
+
+Next, the "train" data are split into a training set and a validation set. The training set is used to build the model and the validation set will be used to check the accuracy of the model.
+
+```{r, echo = TRUE}
+inTrain <- createDataPartition(y = train$classe, p = 0.6, list = FALSE)
+trainSubset <- train[inTrain,]
+validSubset <- train[-inTrain,]
+dim(trainSubset); dim(validSubset)
+```
+
+An initial tree is built to test the predictive quality of all relevant variables.
+
+```{r, echo = TRUE}
+library(tree)
+set.seed(79)
+model1 <- tree(classe~.,data=trainSubset)
+summary(model1)
+plot(model1)
+text(model1,cex =.6)
+```
+
+The tree is messy and may need some pruning but the accuracy of the model can be checked before that.
+
+```{r, echo = TRUE}
+mod1Predict <- predict(model1,validSubset,type="class")
+predMatrix <- with(validSubset,table(mod1Predict,classe))
+sum(diag(predMatrix))/sum(as.vector(predMatrix))
+```
+
+The model makes accurate predictions in 71% of the cases. A model with less variables that has predictive power over 50% is still better than a coin flip. The next step is to see if the number of variables can be reduced while maintaining decent predictive power.
+
+```{r, echo = TRUE}
+cvTrain <- cv.tree(model1,FUN=prune.misclass)
+plot(cvTrain)
+```
+
+It looks like there are noticeable gains in terms of misclassification around the 18 and the 13 variables. Pruning the tree at those variables will result in relatively small accuracy losses with significant gains in terms of variance. Taking the best 13 variables results in a small loss in accuracy but an uncluttered tree (see below) maintaining at more than 60% of predictive accuracy. 
+
+```{r, echo = TRUE}
+pruned <- prune.misclass(model1,best=13)
+predict2 <- predict(pruned,validSubset,type="class")
+predMatrix2 <- with(validSubset,table(predict2,classe))
+sum(diag(predMatrix2))/sum(as.vector(predMatrix2))
+plot(pruned)
+text(pruned,cex =.6)
+```
+
+##      Applying the Model
+
+The final step is to apply the model to the test set and predict the level of exercise for the twenty subjects from that set. Given the excessive computational resources that random forests require in order to use all potential predictors, the model presented here is efficient, but not sufficiently accurate. 
+
+```{r, echo = TRUE}
+predictFinal <- predict(pruned,test,type="class")
+predictFinal
+```
+
+## Building and Applying a More Accurate Model
+
+As a potentially more accurate alternative, a random forest model may be explored. The model relies on the steps laid out previously but takes advantage of the randomForest package. The confusion matrix below shows a lot more accurate predictions and less misclassifications in the validation set. Therefore, the test set predictions generated below are ultimately used.
+
+```{r, echo = TRUE, cache = TRUE}
+library(randomForest)
+model2 <- randomForest(classe ~. , data=trainSubset, method="class")
+mod2predict <- predict(model2, validSubset, type="class")
+confusionMatrix(mod2predict, validSubset$classe)
+
+predict(model2, test)
+```
